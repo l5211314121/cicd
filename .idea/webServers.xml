@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="WebServers">
+    <option name="servers">
+      <webServer id="6fae4720-88b5-4a22-9ae9-9c01a94c1c11" name="47.92.148.31" url="http://47.92.148.31">
+        <fileTransfer host="47.92.148.31" port="22" rootFolder="/root/Projects/src/CICD" accessType="SFTP">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" passiveMode="true" shareSSLContext="true" />
+          </advancedOptions>
+          <option name="port" value="22" />
+        </fileTransfer>
+      </webServer>
+    </option>
+  </component>
+</project>
