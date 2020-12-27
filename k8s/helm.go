@@ -2,53 +2,62 @@ package k8s
 
 import (
 	"fmt"
+	"log"
+	"os"
+
 	"github.com/gin-gonic/gin"
 	"github.com/pkg/errors"
 	"helm.sh/helm/v3/pkg/action"
 	"helm.sh/helm/v3/pkg/chart"
+	"helm.sh/helm/v3/pkg/chart/loader"
 	"helm.sh/helm/v3/pkg/cli"
 	"helm.sh/helm/v3/pkg/cli/values"
 	"helm.sh/helm/v3/pkg/downloader"
 	"helm.sh/helm/v3/pkg/getter"
 	"helm.sh/helm/v3/pkg/strvals"
-	"helm.sh/helm/v3/pkg/chart/loader"
-	"log"
-	"os"
 )
 
-type HelmClient struct {
-	settings *cli.EnvSettings
-	actionConfig *action.Configuration
-}
-
-func (h *HelmClient) Init(){
+func (h *HelmClient) Init() {
 	h.settings = cli.New()
 	h.actionConfig = new(action.Configuration)
 	if err := h.actionConfig.Init(h.settings.RESTClientGetter(), h.settings.Namespace(),
 		os.Getenv("HELM_DRIVER"), debug); err != nil {
 		log.Fatal(err)
 	}
+	h.chartRoot = "/root/helm/"
+	h.RequestData = new(ReqData)
 }
 
-func (h *HelmClient) InstallChart(c * gin.Context) {
-	args := map[string]string {
+func (h *HelmClient) ParseData(c *gin.Context) {
+	c.ShouldBindJSON(h.RequestData)
+}
+
+func (h *HelmClient) InstallChart(c *gin.Context) {
+	args := map[string]string{
 		"set": "image.tag=25",
 	}
 	h.installChart("testchart", "/root/helm/mychart", args)
 }
 
-func (h *HelmClient) UpgradeChart(c *gin.Context){
-	args := map[string] string {
+func (h *HelmClient) UpgradeChart(c *gin.Context) {
+	args := map[string]string{
 		"set": "image.tag=25",
 	}
-	h.upgradeChart("testchart", "/root/helm/mychart", args)
+	h.upgradeChart(h.RequestData.ServiceName, "/root/helm/mychart", args)
 }
 
-func (h *HelmClient) DeleteChart(c *gin.Context){
-	h.deleteChart("testchart")
+func (h *HelmClient) DeleteChart(c *gin.Context) {
+	// data, _ := ioutil.ReadAll(c.Request.Body)
+	// fmt.Printf("0000: ", string(data))
+	reqdata := new(struct {
+		ServiceName string `json:"service_name"`
+	})
+	// c.ShouldBindJSON(h.RequestData)
+	fmt.Println("-----", reqdata)
+	h.deleteChart(reqdata.ServiceName)
 }
 
-func (h*HelmClient) ChartHistory(c *gin.Context){
+func (h *HelmClient) ChartHistory(c *gin.Context) {
 	h.history("testchart")
 }
 
@@ -147,13 +156,13 @@ func (h *HelmClient) upgradeChart(name, chartPath string, args map[string]string
 	fmt.Println(release.Manifest)
 }
 
-func (h *HelmClient) history(name string)  {
+func (h *HelmClient) history(name string) {
 	client := action.NewHistory(h.actionConfig)
 	release_list, err := client.Run(name)
 	if err != nil {
 		log.Fatal(err)
 	}
-	for release, i := range(release_list) {
+	for release, i := range release_list {
 		fmt.Println("-------", release, i.Info.Description, i.Info.Status)
 	}
 }
@@ -167,7 +176,7 @@ func (h *HelmClient) rollbackChart(name string) {
 
 }
 
-func (h *HelmClient) deleteChart(name string){
+func (h *HelmClient) deleteChart(name string) {
 	client := action.NewUninstall(h.actionConfig)
 	release, err := client.Run(name)
 	if err != nil {
@@ -176,7 +185,6 @@ func (h *HelmClient) deleteChart(name string){
 	fmt.Println(release.Release)
 
 }
-
 
 func isChartInstallable(ch *chart.Chart) (bool, error) {
 	switch ch.Metadata.Type {

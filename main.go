@@ -3,12 +3,13 @@ package main
 import (
 	"CICD/jenkins"
 	"CICD/k8s"
+
 	"github.com/gin-gonic/gin"
 )
 
 var jenkinscmd jenkins.JenkinsCmd
 
-func SetRoute(e *gin.Engine,h *k8s.HelmClient) {
+func SetRoute(e *gin.Engine, h *k8s.HelmClient) {
 	e.GET("/ping", func(c *gin.Context) {
 		c.JSON(200, gin.H{
 			"message": "pong",
@@ -19,15 +20,14 @@ func SetRoute(e *gin.Engine,h *k8s.HelmClient) {
 	e.POST("/buildjob", jenkinscmd.BuildJob)
 	e.POST("/getjob", jenkinscmd.GetJob)
 
-
 	e.GET("/installchart", h.InstallChart)
 	e.GET("/upgradechart", h.UpgradeChart)
-	e.GET("/deletechart", h.DeleteChart)
+	e.POST("/deletechart", h.ParseData, h.DeleteChart)
 	e.GET("/charthistory", h.ChartHistory)
 	e.GET("/rollbackchart", h.RollbackChart)
 }
 
-func main(){
+func main() {
 	//gin.SetMode(gin.ReleaseMode)
 	jenkinscmd.JenkinsClient()
 	e := gin.Default()
