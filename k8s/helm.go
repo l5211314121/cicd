@@ -2,199 +2,125 @@ package k8s
 
 import (
 	"fmt"
-	"log"
+	"github.com/lestrrat/go-file-rotatelogs"
+	"github.com/pkg/errors"
+	_ "github.com/rifflock/lfshook"
+	log "github.com/sirupsen/logrus"
 	"os"
+	"path"
+	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/pkg/errors"
 	"helm.sh/helm/v3/pkg/action"
-	"helm.sh/helm/v3/pkg/chart"
-	"helm.sh/helm/v3/pkg/chart/loader"
 	"helm.sh/helm/v3/pkg/cli"
-	"helm.sh/helm/v3/pkg/cli/values"
-	"helm.sh/helm/v3/pkg/downloader"
-	"helm.sh/helm/v3/pkg/getter"
-	"helm.sh/helm/v3/pkg/strvals"
 )
+
+func init(){
+	baseLogPath := path.Join("/root/Projects/src/CICD/", "cicd.log")
+	writer, err := rotatelogs.New(
+		baseLogPath+".%Y%m%d%H%M",
+		rotatelogs.WithLinkName(baseLogPath), // 生成软链，指向最新日志文件
+		rotatelogs.WithMaxAge(7*24*time.Hour), // 文件最大保存时间
+		rotatelogs.WithRotationTime(24*time.Hour), // 日志切割时间间隔
+	)
+
+	if err != nil {
+		log.Errorf("config local file system logger error. %+v", errors.WithStack(err))
+	}
+	log.SetOutput(writer)
+	log.SetFormatter(&log.JSONFormatter{})
+	log.SetLevel(log.InfoLevel)
+	//lfHook := lfshook.NewHook(lfshook.WriterMap{
+	//	log.DebugLevel: writer, // 为不同级别设置不同的输出目的
+	//	log.InfoLevel:  writer,
+	//	log.WarnLevel:  writer,
+	//	log.ErrorLevel: os.Stdout,
+	//	log.FatalLevel: writer,
+	//	log.PanicLevel: writer,
+	//}, &log.JSONFormatter{})
+	//log.AddHook(lfHook)
+
+
+
+}
 
 func (h *HelmClient) Init() {
 	h.settings = cli.New()
 	h.actionConfig = new(action.Configuration)
 	if err := h.actionConfig.Init(h.settings.RESTClientGetter(), h.settings.Namespace(),
 		os.Getenv("HELM_DRIVER"), debug); err != nil {
-		log.Fatal(err)
+		log.Error(err)
 	}
 	h.chartRoot = "/root/helm/"
-	h.RequestData = new(ReqData)
 }
 
-func (h *HelmClient) ParseData(c *gin.Context) {
-	c.ShouldBindJSON(h.RequestData)
+func ParseData(c *gin.Context) *ReqData{
+	reqData := new(ReqData)
+	c.ShouldBindJSON(reqData)
+	return reqData
 }
 
 func (h *HelmClient) InstallChart(c *gin.Context) {
+	reqData := ParseData(c)
+	c.ShouldBindJSON(reqData)
+	fmt.Println(reqData.ServiceName)
 	args := map[string]string{
-		"set": "image.tag=25",
+		"set": "image.tag=" + reqData.ImageTag,
 	}
-	h.installChart("testchart", "/root/helm/mychart", args)
+	h.chartPath = h.chartRoot + reqData.ServiceName
+	if err := h.installChart(reqData.ServiceName, h.chartPath, args); err != nil {
+		c.JSON(500, map[string]string{"error": fmt.Sprintf("%s", err)})
+	}
 }
 
 func (h *HelmClient) UpgradeChart(c *gin.Context) {
+	reqData := ParseData(c)
+	c.ShouldBindJSON(reqData)
 	args := map[string]string{
-		"set": "image.tag=25",
+		"set": "image.tag=" + reqData.ImageTag,
 	}
-	h.upgradeChart(h.RequestData.ServiceName, "/root/helm/mychart", args)
+	h.chartPath = h.chartRoot + reqData.ServiceName
+	if err := h.upgradeChart(reqData.ServiceName, h.chartPath, args); err != nil {
+		c.JSON(500, map[string]string {"error": fmt.Sprintf("%s", err)})
+	}
 }
 
 func (h *HelmClient) DeleteChart(c *gin.Context) {
 	// data, _ := ioutil.ReadAll(c.Request.Body)
 	// fmt.Printf("0000: ", string(data))
-	reqdata := new(struct {
-		ServiceName string `json:"service_name"`
-	})
-	// c.ShouldBindJSON(h.RequestData)
-	fmt.Println("-----", reqdata)
-	h.deleteChart(reqdata.ServiceName)
+	reqData := ParseData(c)
+	c.ShouldBindJSON(reqData)
+	if reqData.ServiceName == "" {
+		c.JSON(500, map[string]string{"error": "ServiceName is needed!"})
+		return
+	}
+	if err := h.deleteChart(reqData.ServiceName); err != nil {
+		c.JSON(500, map[string]string {"error": fmt.Sprintf("%s", err)})
+	}
 }
 
 func (h *HelmClient) ChartHistory(c *gin.Context) {
-	h.history("testchart")
+	reqData := ParseData(c)
+	c.ShouldBindJSON(reqData)
+	if reqData.ServiceName == "" {
+		c.JSON(500, map[string]string{"error": "ServiceName is needed!"})
+		return
+	}
+	if historyData, err := h.history(reqData.ServiceName); err != nil {
+		c.JSON(500, map[string]string {"error": fmt.Sprintf("%s", err)})
+	} else {
+		c.JSON(200, historyData)
+	}
 }
 
 func (h *HelmClient) RollbackChart(c *gin.Context) {
-	h.rollbackChart("testchart")
-}
-
-func (h *HelmClient) installChart(name, chartPath string, args map[string]string) {
-	client := action.NewInstall(h.actionConfig)
-	if client.Version == "" && client.Devel {
-		client.Version = ">0.0.0-0"
+	reqData := ParseData(c)
+	c.ShouldBindJSON(reqData)
+	if reqData.ServiceName == "" {
+		c.JSON(500, map[string]string{"error": "ServiceName is needed!"})
 	}
-
-	client.ReleaseName = name
-	//cp, err := client.ChartPathOptions.LocateChart(repo, settings)
-	//if err != nil {
-	//	log.Fatal(err)
-	//}
-	//debug("CHART PATH: %s\n", cp)
-
-	p := getter.All(h.settings)
-	valueOpts := &values.Options{}
-	vals, err := valueOpts.MergeValues(p)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	if err := strvals.ParseInto(args["set"], vals); err != nil {
-		log.Fatal(errors.Wrap(err, "failed parsing --set data"))
-	}
-
-	chartRequested, err := loader.Load(chartPath)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	validInstallableChart, err := isChartInstallable(chartRequested)
-	if !validInstallableChart {
-		log.Fatal(err)
-	}
-
-	if req := chartRequested.Metadata.Dependencies; req != nil {
-		// If CheckDependencies returns an error, we have unfulfilled dependencies.
-		// As of Helm 2.4.0, this is treated as a stopping condition:
-		// https://github.com/helm/helm/issues/2209
-		if err := action.CheckDependencies(chartRequested, req); err != nil {
-			if client.DependencyUpdate {
-				man := &downloader.Manager{
-					Out:              os.Stdout,
-					ChartPath:        chartPath,
-					Keyring:          client.ChartPathOptions.Keyring,
-					SkipUpdate:       false,
-					Getters:          p,
-					RepositoryConfig: h.settings.RepositoryConfig,
-					RepositoryCache:  h.settings.RepositoryCache,
-				}
-				if err := man.Update(); err != nil {
-					log.Fatal(err)
-				}
-			} else {
-				log.Fatal(err)
-			}
-		}
-	}
-
-	client.Namespace = h.settings.Namespace()
-	release, err := client.Run(chartRequested, vals)
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Println(release.Manifest)
-}
-
-func (h *HelmClient) upgradeChart(name, chartPath string, args map[string]string) {
-	chartRequested, err := loader.Load(chartPath)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	client := action.NewUpgrade(h.actionConfig)
-	client.Recreate = true
-
-	p := getter.All(h.settings)
-	valueOpts := &values.Options{}
-	vals, err := valueOpts.MergeValues(p)
-	if err := strvals.ParseInto(args["set"], vals); err != nil {
-		log.Fatal(errors.Wrap(err, "failed parsing --set data"))
-	}
-	fmt.Println("---------------", vals)
-
-	release, err := client.Run(name, chartRequested, vals)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	fmt.Println(release.Manifest)
-}
-
-func (h *HelmClient) history(name string) {
-	client := action.NewHistory(h.actionConfig)
-	release_list, err := client.Run(name)
-	if err != nil {
-		log.Fatal(err)
-	}
-	for release, i := range release_list {
-		fmt.Println("-------", release, i.Info.Description, i.Info.Status)
+	if err := h.rollbackChart(reqData.ServiceName); err != nil {
+		c.JSON(500, map[string]string {"error": fmt.Sprintf("%s", err)})
 	}
 }
 
-func (h *HelmClient) rollbackChart(name string) {
-	client := action.NewRollback(h.actionConfig)
-	err := client.Run(name)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-}
-
-func (h *HelmClient) deleteChart(name string) {
-	client := action.NewUninstall(h.actionConfig)
-	release, err := client.Run(name)
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Println(release.Release)
-
-}
-
-func isChartInstallable(ch *chart.Chart) (bool, error) {
-	switch ch.Metadata.Type {
-	case "", "application":
-		return true, nil
-	}
-	return false, errors.Errorf("%s charts are not installable", ch.Metadata.Type)
-}
-
-func debug(format string, v ...interface{}) {
-	format = fmt.Sprintf("[debug] %s\n", format)
-	log.Output(2, fmt.Sprintf(format, v...))
-}

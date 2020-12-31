@@ -3,7 +3,6 @@ package main
 import (
 	"CICD/jenkins"
 	"CICD/k8s"
-
 	"github.com/gin-gonic/gin"
 )
 
@@ -16,15 +15,15 @@ func SetRoute(e *gin.Engine, h *k8s.HelmClient) {
 		})
 	})
 
-	e.GET("/reconnect", jenkinscmd.IfReconnect)
+	//e.GET("/reconnect", jenkinscmd.IfReconnect)
 	e.POST("/buildjob", jenkinscmd.BuildJob)
 	e.POST("/getjob", jenkinscmd.GetJob)
 
-	e.GET("/installchart", h.InstallChart)
-	e.GET("/upgradechart", h.UpgradeChart)
-	e.POST("/deletechart", h.ParseData, h.DeleteChart)
-	e.GET("/charthistory", h.ChartHistory)
-	e.GET("/rollbackchart", h.RollbackChart)
+	e.POST("/installchart", h.InstallChart)
+	e.POST("/upgradechart", h.UpgradeChart)
+	e.POST("/deletechart", h.DeleteChart)
+	e.POST("/charthistory", h.ChartHistory)
+	e.POST("/rollbackchart", h.RollbackChart)
 }
 
 func main() {
