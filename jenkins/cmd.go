@@ -3,14 +3,14 @@ package jenkins
 import (
 	"CICD/lib"
 	"CICD/mysql"
+	"database/sql"
 	"fmt"
 	"github.com/bndr/gojenkins"
 	"github.com/gin-gonic/gin"
 	_ "github.com/go-sql-driver/mysql"
-	rotatelogs "github.com/lestrrat/go-file-rotatelogs"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
-	"path"
+	"strings"
 	"time"
 )
 
@@ -20,32 +20,7 @@ type ReqData struct {
 	Username string `json:"user_name"`
 }
 
-func init(){
-	baseLogPath := path.Join("/root/Projects/src/CICD/", "cicd.log")
-	writer, err := rotatelogs.New(
-		baseLogPath+".%Y%m%d%H%M",
-		rotatelogs.WithLinkName(baseLogPath), // 生成软链，指向最新日志文件
-		rotatelogs.WithMaxAge(7*24*time.Hour), // 文件最大保存时间
-		rotatelogs.WithRotationTime(24*time.Hour), // 日志切割时间间隔
-	)
 
-	if err != nil {
-		log.Errorf("config local file system logger error. %+v", errors.WithStack(err))
-	}
-	log.SetOutput(writer)
-	log.SetFormatter(&log.JSONFormatter{})
-	log.SetLevel(log.InfoLevel)
-	//lfHook := lfshook.NewHook(lfshook.WriterMap{
-	//	log.DebugLevel: writer, // 为不同级别设置不同的输出目的
-	//	log.InfoLevel:  writer,
-	//	log.WarnLevel:  writer,
-	//	log.ErrorLevel: os.Stdout,
-	//	log.FatalLevel: writer,
-	//	log.PanicLevel: writer,
-	//}, &log.JSONFormatter{})
-	//log.AddHook(lfHook)
-
-}
 
 func ParseData(c *gin.Context) *ReqData{
 	reqData := new(ReqData)
@@ -61,8 +36,8 @@ func (j *JenkinsCmd)JenkinsClient() (*JenkinsCmd, error) {
 
 func (j *JenkinsCmd)IfReconnect()  {
 	_, err := j.Jenkins.GetJob("test")
-	log.Error(err)
 	if err != nil {
+		log.Error("Get Job err: ", err)
 		fmt.Printf("abc\n")
 		j, err = j.JenkinsClient()
 	}
@@ -80,25 +55,25 @@ func (j *JenkinsCmd) BuildJob(c *gin.Context) {
 
 		if err.Error() == "sql: no rows in result set" {
 			_, err := db.Exec(
-				"insert into coderepo(url,modified,status,modified_by) values(?,?,?,?)",
+				"insert into coderepo(url,modified_time,status,modified_by) values(?,?,?,?)",
 				reqData.GitUrl,
 				time.Now(), 1,
 				reqData.Username)
 
 			if err != nil {
 				log.Error("Build Job write to mysql failed: ", err)
-				c.JSON(500, lib.RespErr("Build Job write to mysql failed: ", err))
+				c.JSON(500, lib.RespErr("Build Job write to mysql failed: ", err.Error()))
 				return
 			}
 		} else {
 			log.Error(err)
-			c.JSON(500, lib.RespErr("scan failed, err ", err))
+			c.JSON(500, lib.RespErr("scan failed, err ", err.Error()))
 			return
 		}
 	}
-	id, err := j.Jenkins.BuildJob(reqData.JobName)
+	id, err := j.Jenkins.BuildJob(reqData.JobName, map[string]string{"BUILD_USER": reqData.Username})
 	if err != nil {
-		c.JSON(500, lib.RespErr("Build job error: ", err))
+		c.JSON(500, lib.RespErr("Build job error: ", err.Error()))
 		return
 	}
 	c.JSON(200, map[string]interface{}{"Success": "True", "ID": id})
@@ -114,15 +89,97 @@ func (j *JenkinsCmd) GetJob(c *gin.Context){
 }
 
 func (j *JenkinsCmd) WriteResToDB(c *gin.Context){
-	reqData := new(mysql.Application)
-	c.ShouldBindJSON(reqData)
-	application := new(mysql.Application)
+	//data, _ := ioutil.ReadAll(c.Request.Body)
+	//fmt.Printf("data", string(data))
+	reqData := new(Application)
+	err := c.ShouldBindJSON(reqData)
+	fmt.Println("shouldbindjson err", err, reqData)
+	log.Info(fmt.Sprintf("reqdata: %s, %s, %s", reqData.PackageName, reqData.CoderepoUrl, reqData.User))
 	db := mysql.Getconn()
-	row := db.QueryRow("select id from application where svc_name=?", reqData.SvcName)
-	if err := row.Scan(&application.Id); err != nil {
-		if err.Error() == "sql: no rows in result set" {
 
-		}
+
+	codeRepoId, err := getCodeRepoId(reqData.CoderepoUrl)
+	if err != nil {
+		c.JSON(500, lib.RespErr("Failed to get code repo id.", err.Error()))
+		return
 	}
 
+	// 循环应用名
+	for k, v := range(getArchPathAndName(reqData.PackageName)) {
+		// 查找应用名是否存在
+		err := writetodb(v, k, codeRepoId, reqData, db)
+		if err !=nil {
+			c.JSON(500, lib.RespErr("write to db error: ", err.Error()))
+			return
+		}
+	}
+}
+
+func getCodeRepoId(repoUrl string) (int, error) {
+	codeRepo := new(mysql.Coderepo)
+	db := mysql.Getconn()
+	row := db.QueryRow("select id from coderepo where url=?", repoUrl)
+	log.Info("getCodeRepoId: repoUrl", repoUrl)
+	if err := row.Scan(&codeRepo.Id); err != nil {
+		log.Error("Failed to get code repo id")
+		return 0, errors.New("query error")
+	} else {
+		return codeRepo.Id, nil
+	}
+}
+
+func getArchPathAndName(svcString string) (map[string]string) {
+	log.Info("Svc String: ", svcString)
+	if len(svcString) == 0 {
+		return map[string]string{}
+	}
+	s1 := strings.Split(svcString, "|")
+	res := map[string]string{}
+	for _, packagePath := range(s1) {
+		packagePathSlice := strings.Split(packagePath, "/")
+		res[packagePath] = (strings.Split(packagePathSlice[len(packagePathSlice)-1], "."))[0]
+	}
+	return res
+}
+
+func writetodb(svcName, archivePath string, codeRepoId int, reqData *Application, db *sql.DB) error {
+	log.Info("exec loop: ", svcName, archivePath)
+	application := new(mysql.Application)
+	codeRepo := new(mysql.Coderepo)
+
+	row := db.QueryRow("select id, coderepo_id from application where svc_name=?", svcName)
+	if err := row.Scan(&application.Id, &application.CoderepoId); err != nil {
+		log.Info("select id, coderepo_id from application where svc_name=", svcName)
+
+		//  如果应用名不存在
+		if err.Error() == "sql: no rows in result set" {
+			_, err := db.Exec("insert into application(svc_name, archivepath, packagename, modified_time, modified_by, coderepo_id) values(?,?,?,?,?,?)",
+				svcName, archivePath, time.Now(), reqData.User, codeRepoId)
+			if err != nil {
+				log.Error("Failed to write to db", err.Error())
+				return err
+			}
+		} else {
+			return err
+		}
+	} else { // 如果应用名存在，判断应用名对应的repo是不是本repo的应用名
+		if codeRepoId != application.CoderepoId {
+			row = db.QueryRow("select url from coderepo where id=?", codeRepoId)
+			if err := row.Scan(&codeRepo.Url); err != nil {
+				log.Error("`WriteResToDB` Error to get repo url: ", err.Error())
+				return err
+			} else {
+				log.Errorf("Service name `%s` has been used by repo `%s`", svcName, codeRepo.Url)
+				return err
+			}
+		} else {
+			log.Info("Write to db: update application ", svcName)
+			_, err := db.Exec("update application set modified_time=?, modified_by=? where svc_name=?", time.Now(), reqData.User, svcName)
+			if err != nil {
+				log.Error("Update service error ", err)
+				return err
+			}
+		}
+	}
+	return nil
 }

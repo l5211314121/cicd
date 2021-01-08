@@ -6,7 +6,7 @@ type Application struct {
 	SvcDesc string `json:"svc_desc"`
 	Archivepath string `json:"archivepath"`
 	PackageName string `json:"packagename"`
-	Modeifed_time string `json:"modeifed_time"`
+	Modified_time string `json:"modified_time"`
 	ModifiedBy string `json:"modified_by"`
 	CoderepoId int `json:"coderepo_id"`
 	Status int `json:"status"`
@@ -16,7 +16,7 @@ type Application struct {
 type Coderepo struct {
 	Id int `json:"id"`
 	Url string `json:"url"`
-	Modified string `json:"modified"`
+	Modified_time string `json:"modified_time"`
 	ModifiedBy string `json:"modified_by"`
 	Status int `json:"status"`
 	DockerBuild string `json:"docker_build"`
